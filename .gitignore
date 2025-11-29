@@ -1,0 +1,7 @@
+﻿node_modules/
+.env
+*.log
+.DS_Store
+velora-1b9c2-firebase-adminsdk-*.json
+serviceAccountKey.json
+firebase-config.json
