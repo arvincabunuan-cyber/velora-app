@@ -1,4 +1,5 @@
 const Product = require('../models/Product');
+const User = require('../models/User');
 
 // Get all products
 exports.getAllProducts = async (req, res) => {
@@ -11,8 +12,22 @@ exports.getAllProducts = async (req, res) => {
     if (seller) query.seller = seller;
 
     const products = await Product.find(query);
+    
+    // Populate seller information for each product
+    const productsWithSeller = await Promise.all(
+      products.map(async (product) => {
+        const sellerInfo = await User.findById(product.seller);
+        return {
+          ...product,
+          sellerName: sellerInfo?.name || 'Unknown Seller',
+          sellerBusinessName: sellerInfo?.businessName || sellerInfo?.name || 'Unknown Store',
+          sellerLocation: sellerInfo?.location || null,
+          sellerAddress: sellerInfo?.currentAddress || sellerInfo?.address || 'Location not set'
+        };
+      })
+    );
 
-    res.status(200).json(products);
+    res.status(200).json(productsWithSeller);
   } catch (error) {
     console.error('Error fetching all products:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -27,8 +42,18 @@ exports.getProduct = async (req, res) => {
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
+    
+    // Get seller information
+    const sellerInfo = await User.findById(product.seller);
+    const productWithSeller = {
+      ...product,
+      sellerName: sellerInfo?.name || 'Unknown Seller',
+      sellerBusinessName: sellerInfo?.businessName || sellerInfo?.name || 'Unknown Store',
+      sellerLocation: sellerInfo?.location || null,
+      sellerAddress: sellerInfo?.currentAddress || sellerInfo?.address || 'Location not set'
+    };
 
-    res.status(200).json({ success: true, data: product });
+    res.status(200).json({ success: true, data: productWithSeller });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

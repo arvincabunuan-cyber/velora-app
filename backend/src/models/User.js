@@ -31,6 +31,9 @@ class User {
       idNumber: cleanData.idNumber || null,
       idImageUrl: cleanData.idImageUrl || null,
       faceImageUrl: cleanData.faceImageUrl || null,
+      // Location fields (for riders)
+      location: cleanData.location || null,
+      currentAddress: cleanData.currentAddress || null,
       createdAt: new Date(),
       updatedAt: new Date()
     };

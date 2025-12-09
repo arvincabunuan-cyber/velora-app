@@ -18,7 +18,9 @@ router.get('/riders', auth, async (req, res) => {
       phone: rider.phone,
       rating: rider.rating || 0,
       totalRatings: rider.totalRatings || 0,
-      isAvailable: rider.isAvailable !== false
+      isAvailable: rider.isAvailable !== false,
+      location: rider.location || null,
+      currentAddress: rider.currentAddress || 'Location not set'
     }));
     
     res.status(200).json({ success: true, data: ridersData });
@@ -41,7 +43,7 @@ router.get('/profile', auth, async (req, res) => {
 // Update user profile
 router.put('/profile', auth, async (req, res) => {
   try {
-    const allowedUpdates = ['name', 'phone', 'address', 'profileImage', 'businessName', 'businessDescription'];
+    const allowedUpdates = ['name', 'phone', 'address', 'profileImage', 'businessName', 'businessDescription', 'location', 'currentAddress'];
     const updates = {};
 
     Object.keys(req.body).forEach(key => {
@@ -50,10 +52,15 @@ router.put('/profile', auth, async (req, res) => {
       }
     });
 
-    const user = await User.findByIdAndUpdate(req.user.id, updates, {
-      new: true,
-      runValidators: true
-    }).select('-password');
+    const user = await User.findByIdAndUpdate(
+      req.user.id, 
+      updates, 
+      {
+        new: true,
+        runValidators: true,
+        select: '-password'
+      }
+    );
 
     res.status(200).json({
       success: true,

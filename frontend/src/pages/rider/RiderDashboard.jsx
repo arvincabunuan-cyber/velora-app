@@ -2,19 +2,107 @@ import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import Layout from '../../components/Layout';
 import { deliveryService } from '../../services/apiService';
-import { Truck, CheckCircle, Clock, AlertTriangle, MessageCircle } from 'lucide-react';
+import axios from 'axios';
+import { Truck, CheckCircle, Clock, AlertTriangle, MessageCircle, MapPin } from 'lucide-react';
+import useAuthStore from '../../store/authStore';
+import toast from 'react-hot-toast';
 
 const RiderDashboard = () => {
+  const { user } = useAuthStore();
   const [stats, setStats] = useState({
     totalDeliveries: 0,
     activeDeliveries: 0,
     completedDeliveries: 0
   });
   const [loading, setLoading] = useState(true);
+  const [currentLocation, setCurrentLocation] = useState(null);
+  const [locationPermission, setLocationPermission] = useState('prompt');
+  const [updatingLocation, setUpdatingLocation] = useState(false);
 
   useEffect(() => {
     fetchData();
+    requestLocationPermission();
   }, []);
+
+  // Update location every 2 minutes
+  useEffect(() => {
+    if (locationPermission === 'granted') {
+      const interval = setInterval(() => {
+        updateRiderLocation();
+      }, 120000); // 2 minutes
+
+      return () => clearInterval(interval);
+    }
+  }, [locationPermission]);
+
+  const requestLocationPermission = async () => {
+    if ('geolocation' in navigator) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+        
+        setLocationPermission('granted');
+        const coords = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        setCurrentLocation(coords);
+        await updateRiderLocation(coords);
+        toast.success('Location access granted');
+      } catch (error) {
+        console.error('Location permission error:', error);
+        setLocationPermission('denied');
+        toast.error('Location access denied. Buyers won\'t see your location.');
+      }
+    } else {
+      toast.error('Geolocation is not supported by your browser');
+    }
+  };
+
+  const updateRiderLocation = async (coords = currentLocation) => {
+    if (!coords) return;
+    
+    setUpdatingLocation(true);
+    try {
+      // Reverse geocode to get address
+      const response = await axios.get(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.lat}&lon=${coords.lng}`
+      );
+      
+      const address = response.data.display_name || 'Location not available';
+      
+      // Update user profile with location
+      const token = localStorage.getItem('token');
+      await axios.put(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/profile`,
+        {
+          location: coords,
+          currentAddress: address
+        },
+        {
+          headers: { Authorization: `Bearer ${token}` }
+        }
+      );
+
+      // Also update rider location for live tracking (used by deliveries.trackDelivery)
+      try {
+        await deliveryService.updateRiderLocation({ latitude: coords.lat, longitude: coords.lng });
+      } catch (err) {
+        console.warn('Failed to update rider location for tracking:', err?.message || err);
+      }
+      
+      setCurrentLocation(coords);
+    } catch (error) {
+      console.error('Error updating location:', error);
+    } finally {
+      setUpdatingLocation(false);
+    }
+  };
 
   const fetchData = async () => {
     try {
@@ -61,6 +149,40 @@ const RiderDashboard = () => {
     <Layout>
       <div className="space-y-6">
         <h1 className="text-3xl font-bold text-gray-900">Rider Dashboard</h1>
+
+        {/* Location Status */}
+        <div className={`p-4 rounded-lg border-2 ${
+          locationPermission === 'granted' 
+            ? 'bg-green-50 border-green-200' 
+            : 'bg-yellow-50 border-yellow-200'
+        }`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <MapPin size={24} className={locationPermission === 'granted' ? 'text-green-600' : 'text-yellow-600'} />
+              <div>
+                <p className="font-semibold text-gray-900">
+                  {locationPermission === 'granted' ? 'Location Tracking Active' : 'Location Access Required'}
+                </p>
+                <p className="text-sm text-gray-600">
+                  {locationPermission === 'granted' 
+                    ? 'Your location is being shared with buyers' 
+                    : 'Enable location to let buyers see your current location'}
+                </p>
+              </div>
+            </div>
+            {locationPermission !== 'granted' && (
+              <button
+                onClick={requestLocationPermission}
+                className="px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700"
+              >
+                Enable Location
+              </button>
+            )}
+            {updatingLocation && (
+              <div className="text-sm text-gray-600">Updating...</div>
+            )}
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <StatCard

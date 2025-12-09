@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import Layout from '../../components/Layout';
 import { deliveryService } from '../../services/apiService';
 import toast from 'react-hot-toast';
+import axios from 'axios';
 
 const Deliveries = () => {
   const [deliveries, setDeliveries] = useState([]);
@@ -11,53 +12,64 @@ const Deliveries = () => {
 
   useEffect(() => {
     fetchDeliveries();
+    updateRiderLocation();
     
-    // Start location tracking when rider has active deliveries
-    const locationInterval = startLocationTracking();
+    // Update location every 2 minutes
+    const locationInterval = setInterval(() => {
+      updateRiderLocation();
+    }, 120000);
     
     return () => {
       if (locationInterval) clearInterval(locationInterval);
     };
   }, []);
 
-  const startLocationTracking = () => {
-    // Request geolocation permission and start tracking
-    if (navigator.geolocation) {
-      // Initial location update
-      updateLocation();
-      
-      // Update location every 30 seconds
-      return setInterval(() => {
-        updateLocation();
-      }, 30000);
-    } else {
-      toast.error('Geolocation is not supported by your browser');
-      return null;
-    }
-  };
-
-  const updateLocation = () => {
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          await deliveryService.updateRiderLocation({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude
+  const updateRiderLocation = async () => {
+    if ('geolocation' in navigator) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
           });
-          console.log('Location updated:', position.coords.latitude, position.coords.longitude);
-        } catch (error) {
-          console.error('Failed to update location:', error);
+        });
+        
+        const coords = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        
+        // Reverse geocode to get address
+        const response = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.lat}&lon=${coords.lng}`
+        );
+        
+        const address = response.data.display_name || 'Location not available';
+        
+        // Update user profile with location
+        const token = localStorage.getItem('token');
+        await axios.put(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/profile`,
+          {
+            location: coords,
+            currentAddress: address
+          },
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+
+        // Also update rider location for live tracking
+        try {
+          await deliveryService.updateRiderLocation({ latitude: coords.lat, longitude: coords.lng });
+        } catch (err) {
+          console.warn('Failed to update rider location for tracking:', err?.message || err);
         }
-      },
-      (error) => {
-        console.error('Geolocation error:', error);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 5000,
-        maximumAge: 0
+      } catch (error) {
+        console.error('Location update error:', error);
       }
-    );
+    }
   };
 
   const fetchDeliveries = async () => {
@@ -80,12 +92,27 @@ const Deliveries = () => {
 
   const assignDelivery = async (id) => {
     try {
+      // Refresh delivery from server to avoid stale state (prevent 400 when another rider already claimed it)
+      const current = await deliveryService.trackDelivery(id);
+      if (current && current.success && current.data) {
+        if (current.data.status !== 'pending') {
+          console.warn('Delivery cannot be assigned, current status:', current.data.status);
+          toast.error(`Cannot assign delivery — current status: ${current.data.status}`);
+          // Refresh lists to keep UI in sync
+          fetchDeliveries();
+          return;
+        }
+      }
+
       await deliveryService.assignDelivery(id);
       toast.success('Delivery assigned to you');
       fetchDeliveries();
       setShowPending(false);
     } catch (error) {
-      toast.error('Failed to assign delivery');
+      console.error('Assign delivery error:', error.response?.data || error);
+      toast.error(error.response?.data?.message || 'Failed to assign delivery');
+      // Refresh lists to ensure UI reflects server state
+      fetchDeliveries();
     }
   };
 
@@ -196,7 +223,19 @@ const Deliveries = () => {
                   </div>
                   {delivery.status === 'assigned' && (
                     <button
-                      onClick={() => updateStatus(delivery.id, 'picked_up')}
+                      onClick={async () => {
+                        try {
+                          // First try to assign it to ourselves if not already assigned
+                          if (!delivery.rider || delivery.rider !== 'current-user-id') {
+                            await deliveryService.assignDelivery(delivery.id);
+                          }
+                          // Then update status to picked_up
+                          await updateStatus(delivery.id, 'picked_up');
+                        } catch (error) {
+                          // If assignment fails, just try to update status
+                          updateStatus(delivery.id, 'picked_up');
+                        }
+                      }}
                       className="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700"
                     >
                       Mark as Picked Up

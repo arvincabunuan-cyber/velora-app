@@ -2,7 +2,10 @@ import { useState, useEffect, useRef } from 'react';
 import Layout from '../../components/Layout';
 import { Send, MessageCircle, AlertTriangle, Info, HelpCircle, Trash2, Users } from 'lucide-react';
 import api from '../../services/api';
+import { userService } from '../../services/apiService';
 import useAuthStore from '../../store/authStore';
+import axios from 'axios';
+import { deliveryService } from '../../services/apiService';
 
 const RiderChat = () => {
   const [riders, setRiders] = useState([]);
@@ -15,7 +18,60 @@ const RiderChat = () => {
 
   useEffect(() => {
     fetchRiders();
+    updateRiderLocation();
+    
+    const locationInterval = setInterval(() => {
+      updateRiderLocation();
+    }, 120000);
+    
+    return () => clearInterval(locationInterval);
   }, []);
+
+  const updateRiderLocation = async () => {
+    if ('geolocation' in navigator) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+        
+        const coords = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        
+        const response = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.lat}&lon=${coords.lng}`
+        );
+        
+        const address = response.data.display_name || 'Location not available';
+        
+        const token = localStorage.getItem('token');
+        await axios.put(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/profile`,
+          {
+            location: coords,
+            currentAddress: address
+          },
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+
+        // Also update delivery tracking location
+        try {
+          await deliveryService.updateRiderLocation({ latitude: coords.lat, longitude: coords.lng });
+        } catch (err) {
+          console.warn('Failed to update rider location for tracking:', err?.message || err);
+        }
+      } catch (error) {
+        console.error('Location update error:', error);
+      }
+    }
+  };
 
   useEffect(() => {
     if (selectedRider) {
@@ -35,9 +91,12 @@ const RiderChat = () => {
 
   const fetchRiders = async () => {
     try {
-      const response = await api.get('/users');
-      const allRiders = response.data.filter(u => u.role === 'rider' && u.id !== user?.id);
-      setRiders(allRiders);
+      // Use the dedicated public riders endpoint which excludes verification photos
+      const response = await userService.getRiders();
+      const ridersList = (response.data && Array.isArray(response.data)) ? response.data : (response.data || response || []);
+      // Remove current user from the list if present
+      const otherRiders = ridersList.filter(r => r.id !== user?.id);
+      setRiders(otherRiders);
     } catch (error) {
       console.error('Error fetching riders:', error);
     }

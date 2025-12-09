@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import Layout from '../../components/Layout';
 import { AlertTriangle, MapPin, User, Plus, Search, Eye, EyeOff, Edit2, Trash2, Map } from 'lucide-react';
 import api from '../../services/api';
+import axios from 'axios';
+import { deliveryService } from '../../services/apiService';
 
 const RiderNotes = () => {
   const [activeTab, setActiveTab] = useState('my-notes'); // 'my-notes' or 'community'
@@ -24,7 +26,60 @@ const RiderNotes = () => {
   useEffect(() => {
     fetchMyNotes();
     fetchPublicNotes();
+    updateRiderLocation();
+    
+    const locationInterval = setInterval(() => {
+      updateRiderLocation();
+    }, 120000);
+    
+    return () => clearInterval(locationInterval);
   }, []);
+
+  const updateRiderLocation = async () => {
+    if ('geolocation' in navigator) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+        
+        const coords = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        
+        const response = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.lat}&lon=${coords.lng}`
+        );
+        
+        const address = response.data.display_name || 'Location not available';
+        
+        const token = localStorage.getItem('token');
+        await axios.put(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/profile`,
+          {
+            location: coords,
+            currentAddress: address
+          },
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+
+        // Also update rider location for delivery tracking
+        try {
+          await deliveryService.updateRiderLocation({ latitude: coords.lat, longitude: coords.lng });
+        } catch (err) {
+          console.warn('Failed to update rider location for tracking:', err?.message || err);
+        }
+      } catch (error) {
+        console.error('Location update error:', error);
+      }
+    }
+  };
 
   const fetchMyNotes = async () => {
     try {

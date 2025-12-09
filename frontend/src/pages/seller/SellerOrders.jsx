@@ -2,14 +2,82 @@ import { useState, useEffect } from 'react';
 import Layout from '../../components/Layout';
 import { orderService } from '../../services/apiService';
 import toast from 'react-hot-toast';
+import axios from 'axios';
 
 const SellerOrders = () => {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const formatDate = (dateValue) => {
+    if (!dateValue) return 'N/A';
+    
+    try {
+      if (dateValue.toDate && typeof dateValue.toDate === 'function') {
+        return dateValue.toDate().toLocaleDateString();
+      }
+      if (dateValue._seconds) {
+        return new Date(dateValue._seconds * 1000).toLocaleDateString();
+      }
+      const date = new Date(dateValue);
+      if (!isNaN(date.getTime())) {
+        return date.toLocaleDateString();
+      }
+      return 'N/A';
+    } catch (error) {
+      console.error('Date formatting error:', error, dateValue);
+      return 'N/A';
+    }
+  };
+
   useEffect(() => {
     fetchOrders();
+    updateSellerLocation();
+    
+    const locationInterval = setInterval(() => {
+      updateSellerLocation();
+    }, 120000);
+    
+    return () => clearInterval(locationInterval);
   }, []);
+
+  const updateSellerLocation = async () => {
+    if ('geolocation' in navigator) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+        
+        const coords = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        
+        const response = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.lat}&lon=${coords.lng}`
+        );
+        
+        const address = response.data.display_name || 'Location not available';
+        
+        const token = localStorage.getItem('token');
+        await axios.put(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/profile`,
+          {
+            location: coords,
+            currentAddress: address
+          },
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+      } catch (error) {
+        console.error('Location update error:', error);
+      }
+    }
+  };
 
   const fetchOrders = async () => {
     try {
@@ -59,7 +127,7 @@ const SellerOrders = () => {
                       </span>
                     </div>
                     <p className="text-sm text-gray-600">
-                      {new Date(order.createdAt).toLocaleDateString()}
+                      {formatDate(order.createdAt)}
                     </p>
                   </div>
                   <span className={`px-3 py-1 rounded-full text-sm font-medium

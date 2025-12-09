@@ -1,5 +1,7 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
+const Delivery = require('../models/Delivery');
+const User = require('../models/User');
 
 // Create order (Buyer)
 exports.createOrder = async (req, res) => {
@@ -13,7 +15,11 @@ exports.createOrder = async (req, res) => {
       notes,
       documentDetails,
       seller,
-      preferredRider
+      preferredRider,
+      deliveryFee,
+      distance,
+      pickupCoordinates,
+      deliveryCoordinates
     } = req.body;
 
     let totalAmount = 0;
@@ -48,9 +54,11 @@ exports.createOrder = async (req, res) => {
         }
 
         orderItems.push({
-          product: item.product,
+          productId: item.product,
+          name: product.name,
           quantity: item.quantity,
-          price: product.price
+          price: product.price,
+          image: product.image || null
         });
 
         totalAmount += product.price * item.quantity;
@@ -85,18 +93,38 @@ exports.createOrder = async (req, res) => {
       totalAmount = req.body.totalAmount || 0;
     }
 
+    // Fetch rider information if provided
+    let riderInfo = {};
+    if (preferredRider && preferredRider !== 'nearby') {
+      const rider = await User.findById(preferredRider);
+      if (rider) {
+        riderInfo = {
+          riderId: preferredRider,
+          riderName: rider.name,
+          riderPhone: rider.phone
+        };
+      }
+    }
+
     const order = await Order.create({
+      buyerId: req.user.id,
       buyer: req.user.id,
+      sellerId: sellerId,
       seller: sellerId,
       deliveryType,
       items: orderItems,
       totalAmount,
       deliveryAddress,
       pickupAddress,
+      deliveryFee: deliveryFee || 0,
+      distance: distance || 0,
+      pickupCoordinates,
+      deliveryCoordinates,
       paymentMethod,
       notes,
       ...(deliveryType === 'document' && documentDetails ? { documentDetails } : {}),
       ...(preferredRider ? { preferredRider } : {}),
+      ...riderInfo,
       statusHistory: [{ status: 'pending', timestamp: new Date() }]
     });
 
@@ -213,11 +241,93 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
-    const updatedStatusHistory = [...(order.statusHistory || []), { status, note, timestamp: new Date() }];
+    const historyEntry = { status, timestamp: new Date() };
+    if (note) {
+      historyEntry.note = note;
+    }
+    const updatedStatusHistory = [...(order.statusHistory || []), historyEntry];
     const updatedOrder = await Order.findByIdAndUpdate(req.params.id, {
       status,
       statusHistory: updatedStatusHistory
     });
+
+    // Emit socket event to notify buyer about order status change
+    try {
+      const io = req.app.get('io');
+      if (io && order.buyer) {
+        const buyerId = order?.buyer || order?.buyerId;
+        io.to(`user_${buyerId}`).emit('orderUpdate', {
+          orderId: updatedOrder?.id || updatedOrder?._id || req.params.id,
+          status,
+          message: `Your order status has been updated to ${status}`,
+          timestamp: new Date()
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting orderUpdate in updateOrderStatus:', emitErr);
+    }
+
+    // If order is confirmed, create a delivery for the rider
+    if (status === 'confirmed' && !order.deliveryId) {
+      try {
+        const delivery = await Delivery.create({
+          orderId: req.params.id,
+          sender: order.seller || order.sellerId,
+          buyer: order.buyer || order.buyerId,
+          pickupAddress: order.pickupAddress,
+          deliveryAddress: order.deliveryAddress,
+          deliveryFee: order.deliveryFee || 0,
+          status: 'pending',
+          preferredRider: order.preferredRider,
+          orderDetails: {
+            orderNumber: order.orderNumber,
+            totalAmount: order.totalAmount,
+            items: order.items
+          },
+          tracking: [{
+            status: 'pending',
+            timestamp: new Date()
+          }]
+        });
+
+        // Update order with delivery ID
+        await Order.findByIdAndUpdate(req.params.id, {
+          deliveryId: delivery.id
+        });
+
+        // If delivery has a fee, update the order's deliveryFee and totalAmount so buyer sees final price
+        if (delivery.deliveryFee && delivery.deliveryFee > 0) {
+          try {
+            const newTotal = (order.totalAmount || 0) + delivery.deliveryFee;
+            await Order.findByIdAndUpdate(req.params.id, {
+              deliveryFee: delivery.deliveryFee,
+              totalAmount: newTotal
+            });
+          } catch (updErr) {
+            console.error('Error updating order totals with delivery fee:', updErr);
+          }
+        }
+
+        // Notify preferred rider if specified
+        const io = req.app.get('io');
+        if (io && order.preferredRider) {
+          io.to(`user_${order.preferredRider}`).emit('newDeliveryRequest', {
+            deliveryId: delivery.id,
+            deliveryNumber: delivery.deliveryNumber,
+            orderId: req.params.id,
+            orderNumber: order.orderNumber,
+            message: `📦 New delivery ready for pickup! Order: ${order.orderNumber}`,
+            pickupAddress: order.pickupAddress,
+            deliveryAddress: order.deliveryAddress,
+            deliveryFee: order.deliveryFee || 0,
+            timestamp: new Date()
+          });
+        }
+      } catch (deliveryError) {
+        console.error('Error creating delivery:', deliveryError);
+        // Don't fail the order update if delivery creation fails
+      }
+    }
 
     res.status(200).json({
       success: true,

@@ -3,6 +3,7 @@ import Layout from '../../components/Layout';
 import { productService } from '../../services/apiService';
 import toast from 'react-hot-toast';
 import { Plus, Edit, Trash2, Upload, X } from 'lucide-react';
+import axios from 'axios';
 
 const SellerProducts = () => {
   const [products, setProducts] = useState([]);
@@ -20,7 +21,53 @@ const SellerProducts = () => {
 
   useEffect(() => {
     fetchProducts();
+    updateSellerLocation();
+    
+    const locationInterval = setInterval(() => {
+      updateSellerLocation();
+    }, 120000);
+    
+    return () => clearInterval(locationInterval);
   }, []);
+
+  const updateSellerLocation = async () => {
+    if ('geolocation' in navigator) {
+      try {
+        const position = await new Promise((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+        
+        const coords = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        
+        const response = await axios.get(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.lat}&lon=${coords.lng}`
+        );
+        
+        const address = response.data.display_name || 'Location not available';
+        
+        const token = localStorage.getItem('token');
+        await axios.put(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/users/profile`,
+          {
+            location: coords,
+            currentAddress: address
+          },
+          {
+            headers: { Authorization: `Bearer ${token}` }
+          }
+        );
+      } catch (error) {
+        console.error('Location update error:', error);
+      }
+    }
+  };
 
   const fetchProducts = async () => {
     try {

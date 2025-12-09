@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Camera, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -9,19 +9,26 @@ const FaceVerification = ({ onSuccess, onCancel }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
 
+  const [pendingStream, setPendingStream] = useState(null);
+
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { facingMode: 'user' } 
       });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        setShowCamera(true);
-      }
+      setPendingStream(stream);
+      setShowCamera(true);
     } catch (error) {
+      console.error('Camera error:', error);
       toast.error('Unable to access camera. Please allow camera permissions.');
     }
   };
+
+  useEffect(() => {
+    if (showCamera && pendingStream && videoRef.current) {
+      videoRef.current.srcObject = pendingStream;
+    }
+  }, [showCamera, pendingStream]);
 
   const capturePhoto = () => {
     const video = videoRef.current;

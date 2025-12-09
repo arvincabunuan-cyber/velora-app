@@ -1,3 +1,9 @@
+export const faceService = {
+  verifyFace: async (idImage, faceImage) => {
+    const response = await api.post('/verify-face', { idImage, faceImage });
+    return response.data;
+  }
+};
 import api from './api';
 
 export const authService = {
@@ -78,12 +84,12 @@ export const orderService = {
 
   getBuyerOrders: async () => {
     const response = await api.get('/orders/buyer');
-    return response.data;
+    return { data: response.data.data || [] };
   },
 
   getSellerOrders: async () => {
     const response = await api.get('/orders/seller');
-    return response.data;
+    return { data: response.data.data || [] };
   },
 
   getOrder: async (id) => {

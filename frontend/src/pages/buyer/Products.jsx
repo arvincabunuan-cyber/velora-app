@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Layout from '../../components/Layout';
 import FaceVerification from '../../components/FaceVerification';
-import { ShoppingCart, Star, Search, X, User, Plus } from 'lucide-react';
+import LocationPicker from '../../components/LocationPicker';
+import MapView from '../../components/MapView';
+import { ShoppingCart, Star, Search, X, User, Plus, MapPin, Map, Calculator } from 'lucide-react';
 import { productService, orderService, userService } from '../../services/apiService';
 import useCartStore from '../../store/cartStore';
 import toast from 'react-hot-toast';
@@ -22,6 +24,17 @@ const Products = () => {
   const [riders, setRiders] = useState([]);
   const [selectedRider, setSelectedRider] = useState(null);
   const [loadingRiders, setLoadingRiders] = useState(false);
+  const [quantity, setQuantity] = useState(1);
+  
+  // Location states
+  const [showPickupMap, setShowPickupMap] = useState(false);
+  const [showDeliveryMap, setShowDeliveryMap] = useState(false);
+  const [pickupAddress, setPickupAddress] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [pickupCoords, setPickupCoords] = useState(null);
+  const [deliveryCoords, setDeliveryCoords] = useState(null);
+  const [deliveryFee, setDeliveryFee] = useState(0);
+  const [distance, setDistance] = useState(0);
 
   useEffect(() => {
     fetchProducts();
@@ -49,18 +62,26 @@ const Products = () => {
   };
 
   const handleOrder = async (product) => {
-    if (!isVerified) {
-      setSelectedProduct(product);
-      setShowFaceVerification(true);
-      return;
-    }
-
-    // Proceed to show rider modal after verification
     showRiderSelection(product);
   };
 
   const showRiderSelection = async (product) => {
     setSelectedProduct(product);
+    setQuantity(1);
+    
+    // Automatically set seller location as pickup
+    if (product.sellerLocation && product.sellerAddress) {
+      setPickupAddress(product.sellerAddress);
+      setPickupCoords(product.sellerLocation);
+    } else {
+      setPickupAddress('');
+      setPickupCoords(null);
+    }
+    
+    setDeliveryAddress('');
+    setDeliveryCoords(null);
+    setDeliveryFee(0);
+    setDistance(0);
     setShowRiderModal(true);
     setLoadingRiders(true);
     
@@ -75,26 +96,111 @@ const Products = () => {
     }
   };
 
+  // Location selection functions
+  const handlePickupLocationSelect = (location) => {
+    setPickupAddress(location.address);
+    setPickupCoords({ lat: location.lat, lng: location.lng });
+    setShowPickupMap(false);
+    
+    // Calculate delivery fee if both locations are selected
+    if (deliveryCoords) {
+      calculateDeliveryFee({ lat: location.lat, lng: location.lng }, deliveryCoords);
+    }
+  };
+
+  const handleDeliveryLocationSelect = (location) => {
+    setDeliveryAddress(location.address);
+    setDeliveryCoords({ lat: location.lat, lng: location.lng });
+    setShowDeliveryMap(false);
+    
+    // Calculate delivery fee if both locations are selected
+    if (pickupCoords) {
+      calculateDeliveryFee(pickupCoords, { lat: location.lat, lng: location.lng });
+    }
+  };
+
+  const calculateDistance = (coord1, coord2) => {
+    const R = 6371; // Earth's radius in km
+    const dLat = (coord2.lat - coord1.lat) * Math.PI / 180;
+    const dLng = (coord2.lng - coord1.lng) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(coord1.lat * Math.PI / 180) * Math.cos(coord2.lat * Math.PI / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c; // Distance in km
+  };
+
+  const calculateDeliveryPrice = (distanceKm) => {
+    const baseFee = 50;
+    const perKmRate = 10;
+    return baseFee + (distanceKm * perKmRate);
+  };
+
+  const calculateDeliveryFee = (pickup, delivery) => {
+    const dist = calculateDistance(pickup, delivery);
+    const fee = calculateDeliveryPrice(dist);
+    setDistance(dist);
+    setDeliveryFee(fee);
+  };
+
   const confirmOrder = async () => {
     if (!selectedRider) {
       toast.error('Please select a rider');
       return;
     }
 
+    if (!deliveryAddress) {
+      toast.error('Please select your delivery location');
+      return;
+    }
+    
+    if (!pickupAddress) {
+      toast.error('Seller location not available');
+      return;
+    }
+
+    if (!pickupCoords || !deliveryCoords) {
+      toast.error('Please select valid locations with coordinates');
+      return;
+    }
+
+    // Show face verification before confirming order
+    if (!isVerified) {
+      setShowFaceVerification(true);
+      return;
+    }
+
     setOrdering(selectedProduct.id);
     try {
+      const subtotal = selectedProduct.price * quantity;
+      const total = subtotal + deliveryFee;
+      
+      // Normalize coordinates to { latitude, longitude } to match backend/frontend expectations
+      const normalizeCoords = (c) => {
+        if (!c) return null;
+        return {
+          latitude: c.latitude ?? c.lat ?? c.latitude ?? null,
+          longitude: c.longitude ?? c.lng ?? c.long ?? c.longitude ?? null
+        };
+      };
+
       const orderData = {
         deliveryType: 'product',
         items: [{
           product: selectedProduct.id,
-          quantity: 1,
+          quantity: quantity,
           price: selectedProduct.price
         }],
-        totalAmount: selectedProduct.price,
-        pickupAddress: 'Seller location - Mindoro, Philippines',
-        deliveryAddress: 'Buyer delivery address - Mindoro, Philippines',
+        totalAmount: total,
+        pickupAddress: pickupAddress,
+        deliveryAddress: deliveryAddress,
+        pickupCoordinates: normalizeCoords(pickupCoords),
+        deliveryCoordinates: normalizeCoords(deliveryCoords),
+        deliveryFee: deliveryFee,
+        distance: distance,
         paymentMethod: 'Cash on Delivery',
-        notes: `Order for ${selectedProduct.name}`,
+        notes: `Order for ${selectedProduct.name} (Qty: ${quantity})`,
         preferredRider: selectedRider
       };
       
@@ -103,6 +209,13 @@ const Products = () => {
       setShowRiderModal(false);
       setSelectedProduct(null);
       setSelectedRider(null);
+      setQuantity(1);
+      setPickupAddress('');
+      setDeliveryAddress('');
+      setPickupCoords(null);
+      setDeliveryCoords(null);
+      setDeliveryFee(0);
+      setDistance(0);
       navigate('/buyer/orders');
     } catch (error) {
       console.error('Error creating order:', error);
@@ -178,6 +291,36 @@ const Products = () => {
                   <h3 className="text-lg font-semibold text-gray-900 mb-1">{product.name}</h3>
                   <p className="text-sm text-gray-600 mb-2 line-clamp-2">{product.description}</p>
                   
+                  {/* Rating */}
+                  {product.averageRating > 0 && (
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="flex items-center gap-1">
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <Star
+                            key={star}
+                            size={14}
+                            className={star <= Math.round(product.averageRating) ? 'text-yellow-400 fill-yellow-400' : 'text-gray-300'}
+                          />
+                        ))}
+                      </div>
+                      <span className="text-sm text-gray-600">
+                        {product.averageRating.toFixed(1)} ({product.reviewCount || 0})
+                      </span>
+                    </div>
+                  )}
+                  
+                  {/* Seller Info */}
+                  <div className="mb-2">
+                    <p className="text-xs text-gray-500">
+                      <span className="font-medium">Seller:</span> {product.sellerBusinessName || product.sellerName}
+                    </p>
+                    {product.sellerAddress && (
+                      <p className="text-xs text-gray-400 line-clamp-1">
+                        📍 {product.sellerAddress}
+                      </p>
+                    )}
+                  </div>
+                  
                   <div className="flex items-center gap-1 mb-2">
                     <span className="text-xs bg-primary-100 text-primary-700 px-2 py-1 rounded">{product.category}</span>
                     <span className="text-xs text-gray-500 ml-auto">Stock: {product.stock}</span>
@@ -214,15 +357,22 @@ const Products = () => {
 
         {/* Rider Selection Modal */}
         {showRiderModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden">
-              <div className="flex items-center justify-between p-6 border-b">
-                <h2 className="text-2xl font-bold text-gray-900">Choose Your Rider</h2>
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between p-6 border-b sticky top-0 bg-white z-10">
+                <h2 className="text-2xl font-bold text-gray-900">Complete Your Order</h2>
                 <button
                   onClick={() => {
                     setShowRiderModal(false);
                     setSelectedProduct(null);
                     setSelectedRider(null);
+                    setQuantity(1);
+                    setPickupAddress('');
+                    setDeliveryAddress('');
+                    setPickupCoords(null);
+                    setDeliveryCoords(null);
+                    setDeliveryFee(0);
+                    setDistance(0);
                   }}
                   className="text-gray-400 hover:text-gray-600"
                 >
@@ -230,30 +380,166 @@ const Products = () => {
                 </button>
               </div>
 
-              <div className="p-6">
+              <div className="p-6 space-y-6">
+                {/* Product Info */}
                 {selectedProduct && (
-                  <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-                    <p className="text-sm text-gray-600 mb-1">Ordering:</p>
-                    <p className="text-lg font-semibold text-gray-900">{selectedProduct.name}</p>
-                    <p className="text-xl font-bold text-primary-600">₱{selectedProduct.price}</p>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-600 mb-2">Ordering:</p>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-lg font-semibold text-gray-900">{selectedProduct.name}</p>
+                        <p className="text-sm text-gray-600">₱{selectedProduct.price} each</p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="text-sm text-gray-600">Quantity:</label>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                            className="w-8 h-8 flex items-center justify-center bg-gray-200 hover:bg-gray-300 rounded-lg"
+                          >
+                            -
+                          </button>
+                          <span className="w-12 text-center font-semibold">{quantity}</span>
+                          <button
+                            onClick={() => setQuantity(Math.min(selectedProduct.stock, quantity + 1))}
+                            className="w-8 h-8 flex items-center justify-center bg-gray-200 hover:bg-gray-300 rounded-lg"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <p className="text-xl font-bold text-primary-600 mt-2">
+                      Subtotal: ₱{(selectedProduct.price * quantity).toFixed(2)}
+                    </p>
                   </div>
                 )}
 
-                <div className="mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Available Riders</h3>
+                {/* Location Selection with Map */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <Map size={20} className="text-primary-600" />
+                    Delivery Map
+                  </h3>
+                  
+                  {/* Big Interactive Map */}
+                  <MapView
+                    sellerLocation={pickupCoords}
+                    sellerName={selectedProduct.sellerBusinessName || selectedProduct.sellerName}
+                    riderLocation={selectedRider ? riders.find(r => r.id === selectedRider)?.location : null}
+                    riderName={selectedRider ? riders.find(r => r.id === selectedRider)?.name : null}
+                    buyerLocation={deliveryCoords}
+                  />
+                  
+                  {/* Pickup Location (Read-only - Seller Location) */}
+                  <div className="p-4 bg-orange-50 border border-orange-200 rounded-lg">
+                    <label className="flex items-center gap-2 text-sm font-medium text-orange-800 mb-2">
+                      <MapPin size={16} className="text-orange-600" />
+                      Pickup Location (Seller)
+                    </label>
+                    <p className="text-sm text-gray-700">
+                      <span className="font-semibold">{selectedProduct.sellerBusinessName || selectedProduct.sellerName}</span>
+                    </p>
+                    <p className="text-xs text-gray-600 mt-1">{pickupAddress}</p>
+                  </div>
+
+                  {/* Delivery Location (Buyer selects) */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Your Delivery Location
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={deliveryAddress}
+                        readOnly
+                        placeholder="Click 'Pin My Location' to select your delivery address"
+                        className="flex-1 px-4 py-2 border border-gray-300 rounded-lg bg-gray-50"
+                      />
+                      <button
+                        onClick={() => setShowDeliveryMap(true)}
+                        className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 whitespace-nowrap"
+                      >
+                        <MapPin size={18} />
+                        Pin My Location
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Distance and Delivery Fee Display */}
+                  {distance > 0 && deliveryFee > 0 && (
+                    <div className="p-4 bg-blue-50 rounded-lg border border-blue-200">
+                      <div className="flex items-center gap-2 text-blue-800 mb-2">
+                        <Calculator size={18} />
+                        <span className="font-semibold">Delivery Calculation</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <p className="text-gray-600">Distance:</p>
+                          <p className="font-semibold text-blue-700">{distance.toFixed(2)} km</p>
+                        </div>
+                        <div>
+                          <p className="text-gray-600">Delivery Fee:</p>
+                          <p className="font-semibold text-blue-700">₱{deliveryFee.toFixed(2)}</p>
+                        </div>
+                      </div>
+                      <div className="mt-3 pt-3 border-t border-blue-300">
+                        <div className="flex justify-between items-center">
+                          <span className="text-gray-700">Subtotal ({quantity}x):</span>
+                          <span className="font-semibold">₱{(selectedProduct.price * quantity).toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between items-center mt-1">
+                          <span className="text-lg font-bold text-blue-900">Total:</span>
+                          <span className="text-xl font-bold text-blue-900">₱{(selectedProduct.price * quantity + deliveryFee).toFixed(2)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Available Riders */}
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Select a Rider</h3>
                   
                   {loadingRiders ? (
                     <div className="text-center py-8">
                       <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600 mx-auto"></div>
                       <p className="text-gray-600 mt-2">Loading riders...</p>
                     </div>
-                  ) : riders.length === 0 ? (
-                    <div className="text-center py-8">
-                      <p className="text-gray-600">No riders available at the moment</p>
-                    </div>
                   ) : (
-                    <div className="space-y-3 max-h-64 overflow-y-auto">
-                      {riders.map((rider) => (
+                    <div className="space-y-3 max-h-80 overflow-y-auto">
+                      {/* Nearby Rider Option */}
+                      <div
+                        onClick={() => setSelectedRider('nearby')}
+                        className={`p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                          selectedRider === 'nearby'
+                            ? 'border-green-600 bg-green-50'
+                            : 'border-gray-200 hover:border-green-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 bg-gradient-to-br from-green-400 to-green-600 rounded-full flex items-center justify-center text-white">
+                              <MapPin size={24} />
+                            </div>
+                            <div>
+                              <p className="font-semibold text-gray-900">Nearby Rider Available</p>
+                              <p className="text-sm text-gray-600">Auto-assign nearest rider</p>
+                              <p className="text-xs text-green-600 mt-1">⚡ Fastest option</p>
+                            </div>
+                          </div>
+                          {selectedRider === 'nearby' && (
+                            <div className="text-green-600 font-semibold">✓ Selected</div>
+                          )}
+                        </div>
+                      </div>
+
+                      {riders.length === 0 ? (
+                        <div className="text-center py-4 text-gray-500 text-sm">
+                          No specific riders to choose from. Use nearby option above.
+                        </div>
+                      ) : (
+                        riders.map((rider) => (
                         <div
                           key={rider.id}
                           onClick={() => setSelectedRider(rider.id)}
@@ -265,7 +551,7 @@ const Products = () => {
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">
-                              <div className="w-12 h-12 bg-gradient-to-br from-primary-400 to-primary-600 rounded-full flex items-center justify-center text-white font-bold">
+                              <div className="w-12 h-12 bg-gradient-to-br from-primary-400 to-primary-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
                                 {rider.name?.charAt(0).toUpperCase()}
                               </div>
                               <div>
@@ -274,6 +560,12 @@ const Products = () => {
                                   <User size={14} />
                                   {rider.phone}
                                 </p>
+                                {rider.currentAddress && (
+                                  <p className="text-xs text-gray-500 flex items-center gap-1 mt-1">
+                                    <MapPin size={12} />
+                                    {rider.currentAddress}
+                                  </p>
+                                )}
                                 {rider.rating > 0 && (
                                   <div className="flex items-center gap-1 mt-1">
                                     <Star size={14} className="text-yellow-400 fill-current" />
@@ -289,18 +581,26 @@ const Products = () => {
                             )}
                           </div>
                         </div>
-                      ))}
+                      )))
+                      }
                     </div>
                   )}
                 </div>
               </div>
 
-              <div className="flex gap-3 p-6 border-t bg-gray-50">
+              <div className="flex gap-3 p-6 border-t bg-gray-50 sticky bottom-0">
                 <button
                   onClick={() => {
                     setShowRiderModal(false);
                     setSelectedProduct(null);
                     setSelectedRider(null);
+                    setQuantity(1);
+                    setPickupAddress('');
+                    setDeliveryAddress('');
+                    setPickupCoords(null);
+                    setDeliveryCoords(null);
+                    setDeliveryFee(0);
+                    setDistance(0);
                   }}
                   className="flex-1 px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 font-medium"
                 >
@@ -308,7 +608,7 @@ const Products = () => {
                 </button>
                 <button
                   onClick={confirmOrder}
-                  disabled={!selectedRider || ordering}
+                  disabled={!selectedRider || !pickupAddress || !deliveryAddress || ordering}
                   className="flex-1 px-4 py-3 bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium disabled:bg-gray-400 disabled:cursor-not-allowed"
                 >
                   {ordering ? 'Placing Order...' : 'Confirm Order'}
@@ -324,14 +624,21 @@ const Products = () => {
               setShowFaceVerification(false);
               setIsVerified(true);
               toast.success('Face verified successfully!');
-              if (selectedProduct) {
-                showRiderSelection(selectedProduct);
-              }
+              // After verification, proceed with order confirmation
+              confirmOrder();
             }}
             onCancel={() => {
               setShowFaceVerification(false);
-              setSelectedProduct(null);
             }}
+          />
+        )}
+
+        {/* Location Picker Modal - Only for Delivery */}
+        {showDeliveryMap && (
+          <LocationPicker
+            onLocationSelect={handleDeliveryLocationSelect}
+            onClose={() => setShowDeliveryMap(false)}
+            title="Select Your Delivery Location"
           />
         )}
       </div>

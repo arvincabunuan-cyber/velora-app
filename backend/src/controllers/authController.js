@@ -10,7 +10,7 @@ const generateToken = (id) => {
 // Register user
 exports.register = async (req, res) => {
   try {
-    const { name, email, password, role, phone, address } = req.body;
+    const { name, email, password, role, phone, address, location, currentAddress } = req.body;
 
     // Check if user already exists
     const userExists = await User.findOne({ email });
@@ -28,7 +28,9 @@ exports.register = async (req, res) => {
       password,
       role,
       phone,
-      address
+      address,
+      location,
+      currentAddress
     });
 
     // Generate token

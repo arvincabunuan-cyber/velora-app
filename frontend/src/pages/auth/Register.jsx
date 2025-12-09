@@ -1,9 +1,9 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { authService } from '../../services/apiService';
+import { authService, faceService } from '../../services/apiService';
 import useAuthStore from '../../store/authStore';
 import toast from 'react-hot-toast';
-import { Camera } from 'lucide-react';
+import FaceVerification from '../../components/FaceVerification';
 
 const Register = () => {
   const [formData, setFormData] = useState({
@@ -18,46 +18,21 @@ const Register = () => {
     faceImageUrl: ''
   });
   const [loading, setLoading] = useState(false);
-  const [showCamera, setShowCamera] = useState(false);
+  const [showFaceModal, setShowFaceModal] = useState(false);
   const [capturedFace, setCapturedFace] = useState(null);
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
   const navigate = useNavigate();
   const { setUser, setToken } = useAuthStore();
 
-  const startCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        setShowCamera(true);
-      }
-    } catch (error) {
-      toast.error('Unable to access camera');
-    }
+
+  const handleFaceSuccess = (imageData) => {
+    setCapturedFace(imageData);
+    setFormData({ ...formData, faceImageUrl: imageData });
+    setShowFaceModal(false);
+    toast.success('Face photo captured!');
   };
 
-  const capturePhoto = () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    if (video && canvas) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0);
-      
-      const imageData = canvas.toDataURL('image/jpeg');
-      setCapturedFace(imageData);
-      setFormData({ ...formData, faceImageUrl: imageData });
-      
-      // Stop camera
-      const stream = video.srcObject;
-      const tracks = stream.getTracks();
-      tracks.forEach(track => track.stop());
-      setShowCamera(false);
-      toast.success('Face photo captured!');
-    }
+  const handleFaceCancel = () => {
+    setShowFaceModal(false);
   };
 
   const handleIdImageUpload = (e) => {
@@ -74,7 +49,7 @@ const Register = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     // Validate buyer ID verification
     if (formData.role === 'buyer') {
       if (!formData.idType || !formData.idNumber) {
@@ -89,10 +64,24 @@ const Register = () => {
         toast.error('Please capture your face photo for verification');
         return;
       }
-    }
-    
-    setLoading(true);
 
+      setLoading(true);
+      // Call backend to verify face
+      try {
+        const result = await faceService.verifyFace(formData.idImageUrl, formData.faceImageUrl);
+        if (!result.match) {
+          toast.error(`Face verification failed. Confidence: ${result.confidence || 'N/A'}`);
+          setLoading(false);
+          return;
+        }
+      } catch (err) {
+        toast.error(err.response?.data?.message || 'Face verification failed');
+        setLoading(false);
+        return;
+      }
+    }
+
+    setLoading(true);
     try {
       await authService.register(formData);
       toast.success('Registration successful! Please log in.');
@@ -215,10 +204,10 @@ const Register = () => {
                     {!capturedFace ? (
                       <button
                         type="button"
-                        onClick={startCamera}
+                        onClick={() => setShowFaceModal(true)}
                         className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
                       >
-                        <Camera size={18} />
+                        <span className="inline-block mr-2"><svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-camera"><circle cx="9" cy="9" r="7"></circle><path d="M5 9h.01"></path><path d="M9 9h.01"></path><path d="M13 9h.01"></path></svg></span>
                         Capture Face Photo
                       </button>
                     ) : (
@@ -237,36 +226,12 @@ const Register = () => {
                       </div>
                     )}
                   </div>
-
-                  {showCamera && (
-                    <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-                      <div className="bg-white p-4 rounded-lg max-w-md w-full">
-                        <video ref={videoRef} autoPlay className="w-full rounded-md mb-3" />
-                        <canvas ref={canvasRef} style={{ display: 'none' }} />
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={capturePhoto}
-                            className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700"
-                          >
-                            Capture
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const stream = videoRef.current.srcObject;
-                              const tracks = stream.getTracks();
-                              tracks.forEach(track => track.stop());
-                              setShowCamera(false);
-                            }}
-                            className="flex-1 px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                      {showFaceModal && (
+                        <FaceVerification
+                          onSuccess={handleFaceSuccess}
+                          onCancel={handleFaceCancel}
+                        />
+                      )}
                 </div>
               </>
             )}

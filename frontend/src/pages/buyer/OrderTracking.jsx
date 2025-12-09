@@ -2,7 +2,27 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Layout from '../../components/Layout';
 import { deliveryService, orderService } from '../../services/apiService';
-import { MapPin, Package, Truck, CheckCircle, Clock, Phone, User } from 'lucide-react';
+import { MapPin, Package, Truck, CheckCircle, Clock, Phone, User, Navigation } from 'lucide-react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
+import 'leaflet/dist/leaflet.css';
+import L from 'leaflet';
+
+// Fix for default marker icons in React-Leaflet
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  // Use embedded SVG data URL to avoid blocked CDN requests (tracking prevention)
+  iconRetinaUrl: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjRUY0NDQ0IiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOCIvPjxwYXRoIGQ9Ik0xMiA4djhoIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTTggMTJoOCIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==',
+  iconUrl: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjRUY0NDQ0IiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOCIvPjxwYXRoIGQ9Ik0xMiA4djhoIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTTggMTJoOCIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==',
+  shadowUrl: ''
+});
+
+// Custom rider icon
+const riderIcon = new L.Icon({
+  iconUrl: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSIjRUY0NDQ0IiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMSI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOCIvPjxwYXRoIGQ9Ik0xMiA4djhoIiBzdHJva2U9IiNGRkZGRkYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PHBhdGggZD0iTTggMTJoOCIgc3Ryb2tlPSIjRkZGRkZGIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjwvc3ZnPg==',
+  iconSize: [32, 32],
+  iconAnchor: [16, 32],
+  popupAnchor: [0, -32],
+});
 
 const OrderTracking = () => {
   const { orderId } = useParams();
@@ -12,19 +32,81 @@ const OrderTracking = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [riderLocation, setRiderLocation] = useState(null);
+  const [pickupCoords, setPickupCoords] = useState(null);
+  const [deliveryCoords, setDeliveryCoords] = useState(null);
 
   useEffect(() => {
     fetchOrderDetails();
-    // Auto-refresh every 10 seconds to get live rider location
-    const interval = setInterval(fetchOrderDetails, 10000);
+    // Auto-refresh every 5 seconds to get live rider location
+    const interval = setInterval(fetchOrderDetails, 5000);
     return () => clearInterval(interval);
   }, [orderId]);
+
+  const formatDate = (dateValue) => {
+    if (!dateValue) return 'N/A';
+    try {
+      // Firestore Timestamp
+      if (dateValue.toDate && typeof dateValue.toDate === 'function') {
+        return dateValue.toDate().toLocaleDateString();
+      }
+      // Firestore-like object with seconds
+      if (dateValue._seconds) {
+        return new Date(dateValue._seconds * 1000).toLocaleDateString();
+      }
+      // Number (ms)
+      if (typeof dateValue === 'number') {
+        return new Date(dateValue).toLocaleDateString();
+      }
+      const d = new Date(dateValue);
+      if (!isNaN(d.getTime())) return d.toLocaleDateString();
+      return 'N/A';
+    } catch (e) {
+      return 'N/A';
+    }
+  };
+
+  const formatDateTime = (dateValue) => {
+    if (!dateValue) return 'N/A';
+    try {
+      if (dateValue.toDate && typeof dateValue.toDate === 'function') {
+        return dateValue.toDate().toLocaleString();
+      }
+      if (dateValue._seconds) {
+        return new Date(dateValue._seconds * 1000).toLocaleString();
+      }
+      if (typeof dateValue === 'number') {
+        return new Date(dateValue).toLocaleString();
+      }
+      const d = new Date(dateValue);
+      if (!isNaN(d.getTime())) return d.toLocaleString();
+      return 'N/A';
+    } catch (e) {
+      return 'N/A';
+    }
+  };
 
   const fetchOrderDetails = async () => {
     try {
       const orderRes = await orderService.getOrder(orderId);
       if (orderRes.success) {
         setOrder(orderRes.data);
+        
+        // Set pickup and delivery coordinates from order
+        // Normalize stored coordinates: support either { latitude, longitude } or { lat, lng }
+        const normalizeFromOrder = (c) => {
+          if (!c) return null;
+          return {
+            latitude: c.latitude ?? c.lat ?? c.latitude ?? null,
+            longitude: c.longitude ?? c.lng ?? c.long ?? c.longitude ?? null
+          };
+        };
+
+        if (orderRes.data.pickupCoordinates) {
+            setPickupCoords(normalizeFromOrder(orderRes.data.pickupCoordinates));
+          }
+          if (orderRes.data.deliveryCoordinates) {
+            setDeliveryCoords(normalizeFromOrder(orderRes.data.deliveryCoordinates));
+          }
         
         // If order has delivery, fetch delivery details with rider location
         if (orderRes.data.delivery) {
@@ -35,6 +117,8 @@ const OrderTracking = () => {
             // Update rider location if available
             if (deliveryRes.data.rider?.currentLocation) {
               setRiderLocation(deliveryRes.data.rider.currentLocation);
+            } else if (deliveryRes.data.riderLocation) {
+              setRiderLocation(deliveryRes.data.riderLocation);
             }
           }
         }
@@ -76,15 +160,42 @@ const OrderTracking = () => {
     }
   };
 
-  const getMapUrl = () => {
-    if (!riderLocation || !riderLocation.latitude || !riderLocation.longitude) {
-      // Default to Mindoro, Philippines
-      return "https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d988876.4505826346!2d120.60877047812502!3d12.999999999999998!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x33a0272f8e2f3e3d%3A0x8b7c9c1f9e2f3e3d!2sMindoro%2C%20Philippines!5e0!3m2!1sen!2sus!4v1234567890123!5m2!1sen!2sus";
+  // Calculate map center and zoom based on available coordinates
+  const getMapCenter = () => {
+    if (riderLocation?.latitude && riderLocation?.longitude) {
+      return [riderLocation.latitude, riderLocation.longitude];
     }
-    
-    // Create map with rider's live location
-    const { latitude, longitude } = riderLocation;
-    return `https://www.google.com/maps/embed/v1/place?key=YOUR_API_KEY&q=${latitude},${longitude}&zoom=15&maptype=roadmap`;
+    if (pickupCoords?.latitude && pickupCoords?.longitude) {
+      return [pickupCoords.latitude, pickupCoords.longitude];
+    }
+    if (deliveryCoords?.latitude && deliveryCoords?.longitude) {
+      return [deliveryCoords.latitude, deliveryCoords.longitude];
+    }
+    // Default to Calapan, Oriental Mindoro
+    return [13.4119, 121.1800];
+  };
+
+  const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const R = 6371; // Radius of the earth in km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const d = R * c; // Distance in km
+    return d;
+  };
+
+  const getDistanceToDestination = () => {
+    if (!riderLocation?.latitude || !deliveryCoords?.latitude) return null;
+    return calculateDistance(
+      riderLocation.latitude,
+      riderLocation.longitude,
+      deliveryCoords.latitude,
+      deliveryCoords.longitude
+    ).toFixed(2);
   };
 
   if (loading) {
@@ -131,7 +242,7 @@ const OrderTracking = () => {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-900">Order #{order.orderNumber}</h2>
-              <p className="text-sm text-gray-500">Placed on {new Date(order.createdAt).toLocaleDateString()}</p>
+              <p className="text-sm text-gray-500">Placed on {formatDate(order.createdAt)}</p>
             </div>
             <div className="text-right">
               <p className="text-2xl font-bold text-primary-600">₱{order.totalAmount}</p>
@@ -152,42 +263,120 @@ const OrderTracking = () => {
         </div>
 
         {/* Live Rider Location Map */}
-        {delivery && delivery.status !== 'delivered' && (
+        {(order.status === 'picked_up' || order.status === 'processing') && (
           <div className="bg-white rounded-lg shadow p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold text-gray-900 flex items-center gap-2">
-                <MapPin className="text-red-500" size={24} />
-                Live Rider Location
+                <Navigation className="text-red-500" size={24} />
+                Live Tracking Map
               </h2>
-              {riderLocation?.lastUpdated && (
-                <span className="text-sm text-gray-500">
-                  Updated: {new Date(riderLocation.lastUpdated).toLocaleTimeString()}
-                </span>
-              )}
+              <div className="text-right">
+                {riderLocation?.lastUpdated && (
+                  <span className="text-sm text-gray-500 block">
+                    Updated: {formatDateTime(riderLocation.lastUpdated)}
+                  </span>
+                )}
+                {getDistanceToDestination() && (
+                  <span className="text-sm font-medium text-primary-600">
+                    {getDistanceToDestination()} km away
+                  </span>
+                )}
+              </div>
             </div>
             
-            <div className="rounded-lg overflow-hidden" style={{ height: '400px' }}>
-              <iframe
-                src={getMapUrl()}
-                width="100%"
-                height="100%"
-                style={{ border: 0 }}
-                allowFullScreen=""
-                loading="lazy"
-                referrerPolicy="no-referrer-when-downgrade"
-              ></iframe>
+            <div className="rounded-lg overflow-hidden border-2 border-gray-200" style={{ height: '500px' }}>
+              <MapContainer
+                center={getMapCenter()}
+                zoom={13}
+                style={{ height: '100%', width: '100%' }}
+              >
+                <TileLayer
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                
+                {/* Pickup Location Marker */}
+                {pickupCoords?.latitude && pickupCoords?.longitude && (
+                  <Marker position={[pickupCoords.latitude, pickupCoords.longitude]}>
+                    <Popup>
+                      <div className="text-sm">
+                        <strong>📍 Pickup Location</strong>
+                        <p className="text-xs text-gray-600 mt-1">{order.pickupAddress}</p>
+                      </div>
+                    </Popup>
+                  </Marker>
+                )}
+                
+                {/* Rider Current Location Marker */}
+                {riderLocation?.latitude && riderLocation?.longitude && (
+                  <Marker 
+                    position={[riderLocation.latitude, riderLocation.longitude]}
+                    icon={riderIcon}
+                  >
+                    <Popup>
+                      <div className="text-sm">
+                        <strong className="text-red-600">🚴 Rider Location</strong>
+                        {order.riderName && <p className="text-xs mt-1">{order.riderName}</p>}
+                        <p className="text-xs text-gray-600">
+                          Last updated: {formatDateTime(riderLocation.lastUpdated || Date.now())}
+                        </p>
+                      </div>
+                    </Popup>
+                  </Marker>
+                )}
+                
+                {/* Delivery Destination Marker */}
+                {deliveryCoords?.latitude && deliveryCoords?.longitude && (
+                  <Marker position={[deliveryCoords.latitude, deliveryCoords.longitude]}>
+                    <Popup>
+                      <div className="text-sm">
+                        <strong className="text-green-600">🏠 Your Location</strong>
+                        <p className="text-xs text-gray-600 mt-1">{order.deliveryAddress}</p>
+                      </div>
+                    </Popup>
+                  </Marker>
+                )}
+                
+                {/* Route Line from Rider to Destination */}
+                {riderLocation?.latitude && deliveryCoords?.latitude && (
+                  <Polyline
+                    positions={[
+                      [riderLocation.latitude, riderLocation.longitude],
+                      [deliveryCoords.latitude, deliveryCoords.longitude]
+                    ]}
+                    color="#3B82F6"
+                    weight={3}
+                    opacity={0.7}
+                    dashArray="10, 10"
+                  />
+                )}
+              </MapContainer>
             </div>
 
-            {riderLocation?.latitude && riderLocation?.longitude && (
-              <div className="mt-4 p-4 bg-blue-50 rounded-lg">
-                <p className="text-sm text-blue-900">
-                  <strong>Rider Position:</strong> {riderLocation.latitude.toFixed(6)}, {riderLocation.longitude.toFixed(6)}
-                </p>
-                <p className="text-xs text-blue-700 mt-1">
-                  📍 Location updates every 10 seconds automatically
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="p-3 bg-blue-50 rounded-lg">
+                <p className="text-xs text-blue-700 font-medium">📍 Pickup</p>
+                <p className="text-sm text-blue-900 truncate">{order.pickupAddress || 'N/A'}</p>
+              </div>
+              <div className="p-3 bg-red-50 rounded-lg">
+                <p className="text-xs text-red-700 font-medium">🚴 Rider</p>
+                <p className="text-sm text-red-900">
+                  {riderLocation?.latitude && riderLocation?.longitude
+                    ? `${riderLocation.latitude.toFixed(4)}, ${riderLocation.longitude.toFixed(4)}`
+                    : 'Updating...'}
                 </p>
               </div>
-            )}
+              <div className="p-3 bg-green-50 rounded-lg">
+                <p className="text-xs text-green-700 font-medium">🏠 Destination</p>
+                <p className="text-sm text-green-900 truncate">{order.deliveryAddress || 'N/A'}</p>
+              </div>
+            </div>
+
+            <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <p className="text-xs text-yellow-800">
+                <strong>ℹ️ Live Updates:</strong> Map refreshes every 5 seconds with rider's current position
+              </p>
+            </div>
           </div>
         )}
 
@@ -228,7 +417,7 @@ const OrderTracking = () => {
                   <div className="flex-1 pb-6">
                     <p className="font-semibold text-gray-900">{getStatusText(track.status)}</p>
                     <p className="text-sm text-gray-500">
-                      {new Date(track.timestamp).toLocaleString()}
+                      {formatDateTime(track.timestamp)}
                     </p>
                     {track.note && (
                       <p className="text-sm text-gray-600 mt-1">{track.note}</p>
@@ -248,7 +437,7 @@ const OrderTracking = () => {
                   <div className="flex-1">
                     <p className="font-semibold text-gray-900">{getStatusText(order.status)}</p>
                     <p className="text-sm text-gray-500">
-                      {new Date(order.createdAt).toLocaleString()}
+                      {formatDateTime(order.createdAt)}
                     </p>
                   </div>
                 </div>

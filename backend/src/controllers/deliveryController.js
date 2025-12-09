@@ -166,26 +166,56 @@ exports.updateDeliveryStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Delivery not found' });
     }
 
-    // Check if user is the assigned rider
-    if (delivery.rider !== req.user.id && req.user.role !== 'superadmin') {
+    console.log('Updating delivery status:', {
+      deliveryId: req.params.id,
+      userId: req.user.id,
+      userRole: req.user.role,
+      deliveryRider: delivery.rider,
+      deliveryStatus: delivery.status,
+      newStatus: status
+    });
+
+    // Authorization logic:
+    // 1. Superadmins can always update
+    // 2. If delivery has no rider yet (pending/assigned), any rider can claim it by updating
+    // 3. If delivery has a rider, only that rider can update it
+    const isAuthorized = 
+      req.user.role === 'superadmin' ||
+      !delivery.rider ||
+      delivery.rider === req.user.id;
+
+    if (!isAuthorized) {
+      console.log('Authorization failed: Delivery assigned to different rider');
       return res.status(403).json({ 
         success: false, 
-        message: 'Not authorized to update this delivery' 
+        message: 'This delivery is assigned to another rider' 
       });
     }
 
     const tracking = Array.isArray(delivery.tracking) ? [...delivery.tracking] : [];
-    tracking.push({
+    const trackingEntry = {
       location,
       status,
-      note,
       timestamp: admin.firestore.Timestamp.now()
-    });
+    };
+    
+    // Only add note if it's defined
+    if (note) {
+      trackingEntry.note = note;
+    }
+    
+    tracking.push(trackingEntry);
 
     const updateData = {
       status: status,
       tracking: tracking
     };
+
+    // If delivery doesn't have a rider assigned, assign current user
+    if (!delivery.rider) {
+      updateData.rider = req.user.id;
+      console.log('Auto-assigning delivery to rider:', req.user.id);
+    }
 
     if (status === 'delivered') {
       updateData.actualDeliveryTime = admin.firestore.Timestamp.now();
@@ -198,7 +228,48 @@ exports.updateDeliveryStatus = async (req, res) => {
     await Delivery.findByIdAndUpdate(req.params.id, updateData);
     const updatedDelivery = await Delivery.findById(req.params.id);
 
-    console.log('Delivery status updated:', updatedDelivery);
+    console.log('Delivery status updated successfully');
+
+    // Emit socket events so buyers/riders see real-time updates
+    try {
+      const io = req.app.get('io');
+      // If this delivery is linked to an order, also update the order status
+      if (delivery.order) {
+        try {
+          // update order status for key delivery transitions so buyer sees the same status
+          await Order.findByIdAndUpdate(delivery.order, { status });
+        } catch (ordUpdErr) {
+          console.error('Error updating linked order status:', ordUpdErr);
+        }
+      }
+
+      // If this delivery is linked to an order, also notify the buyer about order status
+      if (io && delivery.order) {
+        // fetch latest order to get buyer id
+        const order = await Order.findById(delivery.order);
+        const buyerId = order?.buyer || order?.buyerId;
+        const orderId = order?.id || order?._id || delivery.order;
+        if (buyerId) {
+          io.to(`user_${buyerId}`).emit('orderUpdate', {
+            orderId: orderId,
+            status: status,
+            message: `Your order status has been updated to ${status}`,
+            timestamp: new Date()
+          });
+        }
+      }
+
+      // Broadcast rider location update to delivery room if provided
+      if (io && location) {
+        io.to(`delivery_${req.params.id}`).emit('locationUpdated', {
+          riderId: req.user.id,
+          location,
+          timestamp: new Date()
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting socket events for delivery update:', emitErr);
+    }
 
     res.status(200).json({
       success: true,
@@ -223,6 +294,24 @@ exports.updateRiderLocation = async (req, res) => {
         lastUpdated: new Date()
       }
     });
+
+    // Also broadcast location to any deliveries this rider is currently working on
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        const activeDeliveries = await Delivery.find({ rider: req.user.id, status: { $in: ['assigned','picked_up','in_transit'] } });
+        const location = { latitude, longitude };
+        for (const d of activeDeliveries) {
+          io.to(`delivery_${d.id}`).emit('locationUpdated', {
+            riderId: req.user.id,
+            location,
+            timestamp: new Date()
+          });
+        }
+      }
+    } catch (emitErr) {
+      console.error('Error emitting location updates for rider:', emitErr);
+    }
 
     res.status(200).json({
       success: true,
@@ -264,6 +353,37 @@ exports.completeDelivery = async (req, res) => {
     const updatedDelivery = await Delivery.findById(req.params.id);
 
     console.log('Delivery completed:', updatedDelivery);
+
+    // Emit socket events so buyer and delivery room know the delivery is completed
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        // notify buyer if linked
+        if (delivery.order) {
+          const order = await Order.findById(delivery.order);
+          const buyerId = order?.buyer || order?.buyerId;
+          const orderId = order?.id || order?._id || delivery.order;
+          if (buyerId) {
+            io.to(`user_${buyerId}`).emit('orderUpdate', {
+              orderId,
+              status: 'delivered',
+              message: `✅ Your order ${order?.orderNumber || orderId} has been delivered`,
+              timestamp: new Date()
+            });
+          }
+        }
+
+        // broadcast final location/proof to delivery room
+        io.to(`delivery_${req.params.id}`).emit('locationUpdated', {
+          riderId: req.user.id,
+          location: updatedDelivery?.tracking?.slice(-1)?.[0]?.location || updatedDelivery?.lastKnownLocation || null,
+          delivered: true,
+          timestamp: new Date()
+        });
+      }
+    } catch (emitErr) {
+      console.error('Error emitting socket events for completeDelivery:', emitErr);
+    }
 
     res.status(200).json({
       success: true,
